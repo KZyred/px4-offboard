@@ -44,65 +44,101 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDur
 from px4_msgs.msg import OffboardControlMode
 from px4_msgs.msg import TrajectorySetpoint
 from px4_msgs.msg import VehicleStatus
+from px4_msgs.msg import VehicleOdometry 
 
 
 class OffboardControl(Node):
 
     def __init__(self):
         super().__init__('minimal_publisher')
+        #qos
         qos_profile = QoSProfile(
-            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
-            durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL,
-            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,  # co gang gui mau, (chi quan tam den da gui)
+            durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL, # luu tru cac thong tin (depth =1) cho lan ket noi node tiep theo
+            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,  # conly keep (depth =1) samples
             depth=1
         )
-
+        
+        # sub
         self.status_sub = self.create_subscription(
             VehicleStatus,
             '/fmu/out/vehicle_status',
             self.vehicle_status_callback,
             qos_profile)
+        self.odometry = self.create_subscription(
+            VehicleOdometry,
+            '/fmu/out/vehicle_odometry',
+            self.vehicle_odometry_callback,
+            qos_profile)
+        
+        # pub
         self.publisher_offboard_mode = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile)
         self.publisher_trajectory = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
+        
+        # loop
         timer_period = 0.02  # seconds
         self.timer = self.create_timer(timer_period, self.cmdloop_callback)
-        self.dt = timer_period
+        
+        #param for loop
+        self.dt = timer_period                                  # thoi gian cap nhat
         self.declare_parameter('radius', 10.0)
         self.declare_parameter('omega', 5.0)
-        self.declare_parameter('altitude', 5.0)
-        self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX
-        self.arming_state = VehicleStatus.ARMING_STATE_DISARMED
-        # Note: no parameter callbacks are used to prevent sudden inflight changes of radii and omega 
-        # which would result in large discontinuities in setpoints
+        self.declare_parameter('altitude', 0.5)                 
+        self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX     #khoi tao: trang thai UAV
+        self.arming_state = VehicleStatus.ARMING_STATE_DISARMED #khoi tao: trang thai UAV
         self.theta = 0.0
-        self.radius = self.get_parameter('radius').value
-        self.omega = self.get_parameter('omega').value
-        self.altitude = self.get_parameter('altitude').value
+        self.radius = self.get_parameter('radius').value        # ban kinh bay
+        self.omega = self.get_parameter('omega').value          # thoi gian tang toc
+        self.altitude = self.get_parameter('altitude').value    # chieu cao
  
+    # cap nhat trang thai UAV
     def vehicle_status_callback(self, msg):
-        # TODO: handle NED->ENU transformation
-        print("NAV_STATUS: ", msg.nav_state)
-        print("  - offboard status: ", VehicleStatus.NAVIGATION_STATE_OFFBOARD)
+        print("NAV_STATUS: ", msg.nav_state, flush=True)
+        print("  - offboard status: ", VehicleStatus.NAVIGATION_STATE_OFFBOARD, flush=True)
+        print("ARMING_STATE: ", msg.arming_state, flush=True)
+        print("  - arming status: ", VehicleStatus.ARMING_STATE_ARMED, flush=True)
         self.nav_state = msg.nav_state
         self.arming_state = msg.arming_state
+    
+    def vehicle_odometry_callback(self, msg):
+        self.position1 = msg.position
 
     def cmdloop_callback(self):
-        # Publish offboard control modes
-        offboard_msg = OffboardControlMode()
+        ###
+        offboard_msg = OffboardControlMode()  #publish with msg_type:  
         offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
-        offboard_msg.position=True
-        offboard_msg.velocity=False
-        offboard_msg.acceleration=False
+        offboard_msg.position = True
+        offboard_msg.velocity = False
+        offboard_msg.acceleration = False
         self.publisher_offboard_mode.publish(offboard_msg)
+        
+        direc = True
+        x_A = 1
+        y_A = 2
+        x_B = 10
+        y_B = 10
+        # dang off board + bat dong co
         if (self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD and self.arming_state == VehicleStatus.ARMING_STATE_ARMED):
-
             trajectory_msg = TrajectorySetpoint()
-            trajectory_msg.position[0] = self.radius * np.cos(self.theta)
-            trajectory_msg.position[1] = self.radius * np.sin(self.theta)
-            trajectory_msg.position[2] = -self.altitude
-            self.publisher_trajectory.publish(trajectory_msg)
-
-            self.theta = self.theta + self.omega * self.dt
+            trajectory_msg.position[2] = -self.altitude                     # Z : chieu cao
+            if direc:
+                trajectory_msg.position[0] = x_A # X :
+                trajectory_msg.position[1] = y_A   # Y :
+                if(self.position1[0] < (x_A + 0.1)):
+                    direc = False
+            else:
+                trajectory_msg.position[0] = x_B # X :
+                trajectory_msg.position[1] = y_B   # Y :   
+                if(self.position1[0] > (x_B + 0.1)):
+                    direc = True
+            self.publisher_trajectory.publish(trajectory_msg)   
+            print("self.position1: ", self.position1, flush=True)
+            print("direc: ", direc, flush=True)
+            #if (trajectory_msg.position[0] < x_A):
+                #self.theta += self.dt                  # tang len
+            #elif(trajectory_msg.position[0] > x_B):
+                #self.theta -= self.dt 
+                
 
 
 def main(args=None):
