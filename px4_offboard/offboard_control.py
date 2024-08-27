@@ -1,36 +1,4 @@
-#!/usr/bin/env python
-############################################################################
-#
-#   Copyright (C) 2022 PX4 Development Team. All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions
-# are met:
-#
-# 1. Redistributions of source code must retain the above copyright
-#    notice, this list of conditions and the following disclaimer.
-# 2. Redistributions in binary form must reproduce the above copyright
-#    notice, this list of conditions and the following disclaimer in
-#    the documentation and/or other materials provided with the
-#    distribution.
-# 3. Neither the name PX4 nor the names of its contributors may be
-#    used to endorse or promote products derived from this software
-#    without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
-# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
-# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
-# OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
-# AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
-#
-############################################################################
+
 
 __author__ = "Jaeyoung Lim"
 __contact__ = "jalim@ethz.ch"
@@ -44,101 +12,120 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDur
 from px4_msgs.msg import OffboardControlMode
 from px4_msgs.msg import TrajectorySetpoint
 from px4_msgs.msg import VehicleStatus
-from px4_msgs.msg import VehicleOdometry 
 
 
 class OffboardControl(Node):
 
     def __init__(self):
         super().__init__('minimal_publisher')
-        #qos
         qos_profile = QoSProfile(
-            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,  # co gang gui mau, (chi quan tam den da gui)
-            durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL, # luu tru cac thong tin (depth =1) cho lan ket noi node tiep theo
-            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,  # conly keep (depth =1) samples
+            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+            durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL,
+            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
             depth=1
         )
-        
-        # sub
+
+        # Load parameters from the YAML file
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('polygon_center', [0,0]),
+                ('circum_radius',5),
+                ('n_sides', 3),
+                ('meter_per_sec', 0.5),
+                ('polygon_angle', 45),
+                ('uav_height', -0.8),
+                ('uav_yaw', 0.0),
+            ])
+
+        # Retrieve parameters
+        self.polygon_center = self.get_parameter('polygon_center').value
+        self.circum_radius = self.get_parameter('circum_radius').value
+        self.n_sides = self.get_parameter('n_sides').value
+        self.meter_per_sec = self.get_parameter('meter_per_sec').value
+        self.polygon_angle = self.get_parameter('polygon_angle').value
+        self.uav_height = self.get_parameter('uav_height').value
+        self.uav_yaw = self.get_parameter('uav_yaw').value
+        # Automatically set
+        self.speed_factor = 9.76 # Obtained by flight (trial and error)
+        self.points_per_line = int(2*np.pi*self.circum_radius*self.speed_factor/(self.n_sides*self.meter_per_sec))
+        self.counter = 0
+
+
         self.status_sub = self.create_subscription(
             VehicleStatus,
             '/fmu/out/vehicle_status',
             self.vehicle_status_callback,
             qos_profile)
-        self.odometry = self.create_subscription(
-            VehicleOdometry,
-            '/fmu/out/vehicle_odometry',
-            self.vehicle_odometry_callback,
-            qos_profile)
-        
-        # pub
         self.publisher_offboard_mode = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile)
         self.publisher_trajectory = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
-        
-        # loop
-        timer_period = 0.02  # seconds
+
+        timer_period = 0.1  # seconds
         self.timer = self.create_timer(timer_period, self.cmdloop_callback)
-        
-        #param for loop
-        self.dt = timer_period                                  # thoi gian cap nhat
-        self.declare_parameter('radius', 10.0)
-        self.declare_parameter('omega', 5.0)
-        self.declare_parameter('altitude', 0.5)                 
-        self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX     #khoi tao: trang thai UAV
-        self.arming_state = VehicleStatus.ARMING_STATE_DISARMED #khoi tao: trang thai UAV
-        self.theta = 0.0
-        self.radius = self.get_parameter('radius').value        # ban kinh bay
-        self.omega = self.get_parameter('omega').value          # thoi gian tang toc
-        self.altitude = self.get_parameter('altitude').value    # chieu cao
+
+        self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX
+        self.arming_state = VehicleStatus.ARMING_STATE_DISARMED
  
-    # cap nhat trang thai UAV
     def vehicle_status_callback(self, msg):
-        print("NAV_STATUS: ", msg.nav_state, flush=True)
-        print("  - offboard status: ", VehicleStatus.NAVIGATION_STATE_OFFBOARD, flush=True)
-        print("ARMING_STATE: ", msg.arming_state, flush=True)
-        print("  - arming status: ", VehicleStatus.ARMING_STATE_ARMED, flush=True)
+        # TODO: handle NED->ENU transformation
+        print("NAV_STATUS: ", msg.nav_state)
+        print("  - offboard status: ", VehicleStatus.NAVIGATION_STATE_OFFBOARD)
         self.nav_state = msg.nav_state
         self.arming_state = msg.arming_state
-    
-    def vehicle_odometry_callback(self, msg):
-        self.position1 = msg.position
 
     def cmdloop_callback(self):
-        ###
-        offboard_msg = OffboardControlMode()  #publish with msg_type:  
+        # Publish offboard control modes
+        offboard_msg = OffboardControlMode()
         offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
-        offboard_msg.position = True
-        offboard_msg.velocity = False
-        offboard_msg.acceleration = False
+        offboard_msg.position=True
+        offboard_msg.velocity=False
+        offboard_msg.acceleration=False
         self.publisher_offboard_mode.publish(offboard_msg)
-        
-        direc = True
-        x_A = 1
-        y_A = 2
-        x_B = 10
-        y_B = 10
-        # dang off board + bat dong co
+
+
+        # Get full polygon path
+        path = self.polygon_path(self.polygon_center, self.n_sides, self.circum_radius, self.points_per_line, self.polygon_angle)
+
+        # Start sending setpoints if in offboard mode
         if (self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD and self.arming_state == VehicleStatus.ARMING_STATE_ARMED):
+            # Trajectory setpoint - NED local world frame
             trajectory_msg = TrajectorySetpoint()
-            trajectory_msg.position[2] = -self.altitude                     # Z : chieu cao
-            if direc:
-                trajectory_msg.position[0] = x_A # X :
-                trajectory_msg.position[1] = y_A   # Y :
-                if(self.position1[0] < (x_A + 0.1)):
-                    direc = False
-            else:
-                trajectory_msg.position[0] = x_B # X :
-                trajectory_msg.position[1] = y_B   # Y :   
-                if(self.position1[0] > (x_B + 0.1)):
-                    direc = True
-            self.publisher_trajectory.publish(trajectory_msg)   
-            print("self.position1: ", self.position1, flush=True)
-            print("direc: ", direc, flush=True)
-            #if (trajectory_msg.position[0] < x_A):
-                #self.theta += self.dt                  # tang len
-            #elif(trajectory_msg.position[0] > x_B):
-                #self.theta -= self.dt 
-                
+            # Timestamp is automatically set inside PX4
+            trajectory_msg.timestamp = 0
+            px, py = path[self.counter]
+            pz = self.uav_height # in m
+            trajectory_msg.position = [px, py, pz] # [x, y, z] in meters
+            #setpoint_traj.velocity # in m/s
+            #setpoint_traj.acceleration # in m/s^2
+            #setpoint_traj.jerk # m/s^3 (for logging only)
+            trajectory_msg.yaw = self.uav_yaw*np.pi/180.0 # in rad
+            #setpoint_traj.yawspeed = 0.0 # in rad/s
+
+            # Publish
+            self.publisher_trajectory.publish(trajectory_msg)
+
+            # Control the path points counter
+            self.counter+=1
+            if self.counter == len(path):
+                self.counter = 0
+        else:
+            self.counter = 0
+
+
+    def polygon_path(self, polygon_center, n_sides, circum_radius, points_per_line, polygon_angle):
+      # Get vertices
+      theta = np.linspace(0, 2*np.pi, n_sides+1) + np.radians(polygon_angle)
+      x = circum_radius * np.cos(theta) + polygon_center[0]
+      y = circum_radius * np.sin(theta) + polygon_center[1]
+
+      # Add points between vertices
+      path_coordinates = []
+      for i in range(n_sides):
+          x_interp = np.linspace(x[i], x[i+1], points_per_line+2)[0:-1]
+          y_interp = np.linspace(y[i], y[i+1], points_per_line+2)[0:-1]
+          path_coordinates.extend(list(zip(x_interp, y_interp)))
+
+      return path_coordinates
 
 
 def main(args=None):
