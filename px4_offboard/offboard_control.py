@@ -33,8 +33,8 @@ class OffboardControl(Node):
                 ('circum_radius',5),
                 ('n_sides', 3),
                 ('meter_per_sec', 0.5),
-                ('polygon_angle', 45),
-                ('uav_height', -0.8),
+                ('polygon_angle', 0),
+                ('uav_height', -5.0),
                 ('uav_yaw', 0.0),
             ])
 
@@ -95,11 +95,11 @@ class OffboardControl(Node):
             px, py = path[self.counter]
             pz = self.uav_height # in m
             trajectory_msg.position = [px, py, pz] # [x, y, z] in meters
-            #setpoint_traj.velocity # in m/s
-            #setpoint_traj.acceleration # in m/s^2
-            #setpoint_traj.jerk # m/s^3 (for logging only)
-            trajectory_msg.yaw = self.uav_yaw*np.pi/180.0 # in rad
-            #setpoint_traj.yawspeed = 0.0 # in rad/s
+            #trajectory_msg.velocity # in m/s
+            #trajectory_msg.acceleration # in m/s^2
+            #trajectory_msg.jerk # m/s^3 (for logging only)
+            #trajectory_msg.yaw = self.uav_yaw # in degree
+            #trajectory_msg.yawspeed = 0.0 # in rad/s
 
             # Publish
             self.publisher_trajectory.publish(trajectory_msg)
